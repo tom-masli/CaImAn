@@ -36,7 +36,8 @@ class Estimates(object):
 
         Args:
             A:  scipy.sparse.csc_matrix (dimensions: # of pixels x # components)
-                set of spatial footprints. Each footprint is represented in a column of A, flattened with order = 'F'
+                set of spatial footprints. Each footprint is represented in a column of A, flattened with order = 'F'. 
+                Must be a np.ndarray of type `bool` if used for manual seeded initialization.
 
             C:  np.ndarray (dimensions: # of components x # of timesteps)
                 set of temporal traces (each row of C corresponds to a trace)
@@ -105,8 +106,9 @@ class Estimates(object):
                 eccentricity values
         """
         # Sanity checks (right now these just warn, but eventually we would like to fail)
+        logger = logging.getLogger("caiman")
         if R is not None and not isinstance(R, np.ndarray):
-            logging.warning(f"Estimates.R should be an np.ndarray but was assigned a {type(R)}")
+            logger.warning(f"Estimates.R should be an np.ndarray but was assigned a {type(R)}")
 
         # variables related to the estimates of traces, footprints, deconvolution and background
         self.A = A
@@ -165,11 +167,35 @@ class Estimates(object):
         self.A_thr = None
         self.discarded_components = None
 
+    def __str__(self):
+        ret = f"Caiman CNMF Estimates Object. subfields:{list(self.__dict__.keys())}"
+        if hasattr(self, 'A') and self.A is not None:
+            ret += f" A.shape={self.A.shape}"
+        if hasattr(self, 'b') and self.b is not None:
+            ret += f" b.shape={self.b.shape}"
+        if hasattr(self, 'C') and self.C is not None:
+            ret += f" C.shape={self.C.shape}"
+        return ret
 
+    def __repr__(self):
+        ret = f"Caiman CNMF Estimates Object"
+        if hasattr(self, 'A') and self.A is not None:
+            ret += f" A.shape={self.A.shape}"
+        if hasattr(self, 'b') and self.b is not None and len(self.b.shape) > 1:
+            ret += f" bg components={self.b.shape[1]}"
+        if hasattr(self, 'C') and self.C is not None:
+            ret += f" C.shape={self.C.shape}"
+        ret += " Use str() for more details"
+        return ret
+
+
+    def __getitem__(self, idx):
+        return getattr(self, idx)
+    # We want subscripting to be read-only so we do not define a __setitem__ method
 
     def plot_contours(self, img=None, idx=None, thr_method='max',
                       thr=0.2, display_numbers=True, params=None,
-                      cmap='viridis'):
+                      cmap='viridis') -> None:
         """view contours of all spatial footprints.
 
         Args:
@@ -224,10 +250,11 @@ class Estimates(object):
                                                      display_numbers=display_numbers,
                                                      cmap=cmap)
             plt.title('Rejected Components')
-        return self
 
     def plot_contours_nb(self, img=None, idx=None, thr_method='max',
-                         thr=0.2, params=None, line_color='white', cmap='viridis', figure_width = 600):
+
+                         thr=0.2, params=None, line_color='white', cmap='viridis', figure_width = 600)-> None:
+
         """view contours of all spatial footprints (notebook environment).
 
         Args:
@@ -309,9 +336,8 @@ class Estimates(object):
             print("Using non-interactive plot as fallback")
             self.plot_contours(img=img, idx=idx, thr_method=thr_method,
                                thr=thr, params=params, cmap=cmap)
-        return self
 
-    def view_components(self, Yr=None, img=None, idx=None):
+    def view_components(self, Yr=None, img=None, idx=None) -> None:
         """view spatial and temporal components interactively
 
         Args:
@@ -352,10 +378,12 @@ class Estimates(object):
                 r_values=None if self.r_values is None else self.r_values[idx],
                 SNR=None if self.SNR_comp is None else self.SNR_comp[idx],
                 cnn_preds=None if np.sum(self.cnn_preds) in (0, None) else self.cnn_preds[idx])
-        return self
 
     def nb_view_components(self, Yr=None, img=None, idx=None,
-                           denoised_color=None, cmap='jet', thr=0.99, filename_components = 'accepted_components.txt'):
+
+                           denoised_color=None, cmap='jet', thr=0.99, filename_components = 'accepted_components.txt') -> None:
+
+
         """view spatial and temporal components interactively in a notebook
 
         Args:
@@ -433,6 +461,7 @@ class Estimates(object):
        
         return self
 
+
     def hv_view_components(self, Yr=None, img=None, idx=None,
                            denoised_color=None, cmap='viridis'):
         """view spatial and temporal components interactively in a notebook
@@ -487,7 +516,7 @@ class Estimates(object):
 
     def nb_view_components_3d(self, Yr=None, image_type='mean', dims=None,
                               max_projection=False, axis=0,
-                              denoised_color=None, cmap='jet', thr=0.9):
+                              denoised_color=None, cmap='jet', thr=0.9) -> None:
         """view spatial and temporal components interactively in a notebook
         (version for 3d data)
 
@@ -538,8 +567,6 @@ class Estimates(object):
                     dims=dims, image_type=image_type, Yr=Yr,
                     max_projection=max_projection, axis=axis, thr=thr,
                     denoised_color=denoised_color, cmap=cmap)
-
-        return self
 
     def make_color_movie(self, imgs, q_max=99.75, q_min=2, gain_res=1,
                          magnification=1, include_bck=True,
@@ -745,7 +772,8 @@ class Estimates(object):
              Yr :    np.ndarray
                  movie in format pixels (d) x frames (T)
             """
-        logging.warning("Computing the full background has big memory requirements!")
+        logger = logging.getLogger("caiman")
+        logger.warning("Computing the full background has big memory requirements!")
         if self.f is not None:  # low rank background
             return self.b.dot(self.f)
         else:  # ring model background
@@ -762,7 +790,7 @@ class Estimates(object):
                     (-1, B.shape[-1]), order='F')
                 return B
 
-    def compute_residuals(self, Yr):
+    def compute_residuals(self, Yr) -> None:
         """compute residual for each component (variable R)
 
          Args:
@@ -794,11 +822,9 @@ class Estimates(object):
         AA = Ab.T.dot(Ab) * nA2_inv_mat
         self.R = (YA - (AA.T.dot(Cf)).T)[:, :self.A.shape[-1]].T
 
-        return self
-
     def detrend_df_f(self, quantileMin=8, frames_window=500,
                      flag_auto=True, use_fast=False, use_residuals=True,
-                     detrend_only=False):
+                     detrend_only=False) -> None:
         """Computes DF/F normalized fluorescence for the extracted traces. See
         caiman.source.extraction.utilities.detrend_df_f for details
 
@@ -828,10 +854,11 @@ class Estimates(object):
             self: CNMF object
                 self.F_dff contains the DF/F normalized traces
         """
+        logger = logging.getLogger("caiman")
         # FIXME This method shares its name with a function elsewhere in the codebase (which it wraps)
 
         if self.C is None or self.C.shape[0] == 0:
-            logging.warning("There are no components for DF/F extraction!")
+            logger.warning("There are no components for DF/F extraction!")
             return self
 
         if use_residuals:
@@ -850,9 +877,8 @@ class Estimates(object):
                                   frames_window=frames_window,
                                   flag_auto=flag_auto, use_fast=use_fast,
                                   detrend_only=detrend_only)
-        return self
 
-    def normalize_components(self):
+    def normalize_components(self) -> None:
         """ Normalizes components such that spatial components have l_2 norm 1
         """
         if 'csc_matrix' not in str(type(self.A)):
@@ -887,9 +913,8 @@ class Estimates(object):
             nB_inv_mat = scipy.sparse.spdiags(1. / (nB + np.finfo(np.float32).eps), 0, nB.shape[0], nB.shape[0])
             self.b = self.b * nB_inv_mat
             self.f = nB_mat * self.f
-        return self
 
-    def select_components(self, idx_components=None, use_object=False, save_discarded_components=True):
+    def select_components(self, idx_components=None, use_object=False, save_discarded_components=True) -> None:
         """Keeps only a selected subset of components and removes the rest.
         The subset can be either user defined with the variable idx_components
         or read from the estimates object. The flag use_object determines this
@@ -968,11 +993,10 @@ class Estimates(object):
             self.idx_components = None
             self.idx_components_bad = None
 
-        return self
-
-    def restore_discarded_components(self):
+    def restore_discarded_components(self) -> None:
         ''' Recover components that are filtered out with the select_components method
         '''
+        logger = logging.getLogger("caiman")
         if self.discarded_components is not None:
             for field in ['C', 'S', 'YrA', 'R', 'F_dff', 'g', 'bl', 'c1', 'neurons_sn', 'lam', 'cnn_preds','SNR_comp','r_values','coordinates']:
                 if getattr(self, field) is not None:
@@ -982,7 +1006,7 @@ class Estimates(object):
                         setattr(self, field, np.concatenate([getattr(self, field), getattr(self.discarded_components, field)], axis=0))
                         setattr(self.discarded_components, field, None)
                     else:
-                        logging.warning('Variable ' + field + ' could not be \
+                        logger.warning('Variable ' + field + ' could not be \
                                         restored as it does not have the same \
                                         number of components as A')
 
@@ -998,7 +1022,7 @@ class Estimates(object):
 
             self.nr = self.A.shape[-1]
 
-    def evaluate_components_CNN(self, params, neuron_class=1):
+    def evaluate_components_CNN(self, params, neuron_class=1) -> None:
         """Estimates the quality of inferred spatial components using a
         pretrained CNN classifier.
 
@@ -1019,9 +1043,8 @@ class Estimates(object):
         predictions = evaluate_components_CNN(self.A, dims, gSig)[0]
         self.cnn_preds = predictions[:, neuron_class]
         self.idx_components = np.where(self.cnn_preds >= min_cnn_thr)[0]
-        return self
 
-    def evaluate_components(self, imgs, params, dview=None):
+    def evaluate_components(self, imgs, params, dview=None) -> None:
         """Computes the quality metrics for each component and stores the
         indices of the components that pass user specified thresholds. The
         various thresholds and parameters can be passed as inputs. If left
@@ -1060,6 +1083,7 @@ class Estimates(object):
                 self.cnn_preds: np.array
                     CNN classifier values for each component
         """
+        logger = logging.getLogger("caiman")
         dims = imgs.shape[1:]
         opts = params.get_group('quality')
         idx_components, idx_components_bad, SNR_comp, r_values, cnn_preds = \
@@ -1078,11 +1102,11 @@ class Estimates(object):
         self.idx_components = idx_components.astype(int)
         self.idx_components_bad = idx_components_bad.astype(int)
         if np.any(np.isnan(r_values)):
-            logging.warning('NaN values detected for space correlation in {}'.format(np.where(np.isnan(r_values))[0]) +
+            logger.warning('NaN values detected for space correlation in {}'.format(np.where(np.isnan(r_values))[0]) +
                             '. Changing their value to -1.')
             r_values = np.where(np.isnan(r_values), -1, r_values)
         if np.any(np.isnan(SNR_comp)):
-            logging.warning('NaN values detected for trace SNR in {}'.format(np.where(np.isnan(SNR_comp))[0]) +
+            logger.warning('NaN values detected for trace SNR in {}'.format(np.where(np.isnan(SNR_comp))[0]) +
                             '. Changing their value to 0.')
             SNR_comp = np.where(np.isnan(SNR_comp), 0, SNR_comp)
         self.SNR_comp = SNR_comp
@@ -1095,9 +1119,8 @@ class Estimates(object):
                                                  np.setdiff1d(self.idx_components,
                                                               idx_ecc))
             self.idx_components = np.intersect1d(self.idx_components, idx_ecc)
-        return self
 
-    def filter_components(self, imgs, params, new_dict={}, dview=None, select_mode:str='All'):
+    def filter_components(self, imgs, params, new_dict={}, dview=None, select_mode:str='All') -> None:
         """
         Filters components based on given thresholds without re-computing
         the quality metrics. If the quality metrics are not present then it
@@ -1185,8 +1208,6 @@ class Estimates(object):
 
         self.idx_components_bad = np.array(np.setdiff1d(range(len(self.SNR_comp)),self.idx_components))
 
-        return self
-
     def deconvolve(self, params, dview=None, dff_flag=False):
         ''' performs deconvolution on the estimated traces using the parameters
         specified in params. Deconvolution on detrended and normalized (DF/F)
@@ -1202,7 +1223,7 @@ class Estimates(object):
         Returns:
             self: estimates object
         '''
-
+        logger = logging.getLogger("caiman")
         F = self.C + self.YrA
         args = dict()
         args['p'] = params.get('preprocess', 'p')
@@ -1239,7 +1260,7 @@ class Estimates(object):
 
         if dff_flag:
             if self.F_dff is None:
-                logging.warning('The F_dff field is empty. Run the method' +
+                logger.warning('The F_dff field is empty. Run the method' +
                                 ' estimates.detrend_df_f before attempting' +
                                 ' to deconvolve.')
             else:
@@ -1261,7 +1282,7 @@ class Estimates(object):
                 self.S_dff = np.stack([results[1][i] for i in order])
 
     def merge_components(self, Y, params, mx=50, fast_merge=True,
-                         dview=None, max_merge_area=None):
+                         dview=None):
             """merges components
             """
             # FIXME This method shares its name with a function elsewhere in the codebase (which it wraps)
@@ -1273,8 +1294,7 @@ class Estimates(object):
                                  params.get_group('spatial'), dview=dview,
                                  bl=self.bl, c1=self.c1, sn=self.neurons_sn,
                                  g=self.g, thr=params.get('merging', 'merge_thr'), mx=mx,
-                                 fast_merge=fast_merge, merge_parallel=params.get('merging', 'merge_parallel'),
-                                 max_merge_area=max_merge_area)
+                                 fast_merge=fast_merge, merge_parallel=params.get('merging', 'merge_parallel'))
 
     def manual_merge(self, components, params):
         ''' merge a given list of components. The indices
@@ -1299,6 +1319,7 @@ class Estimates(object):
         Returns:
             self: estimates object
         '''
+        logger = logging.getLogger("caiman")
 
         ln = np.sum(np.array([len(comp) for comp in components]))
         ids = set.union(*[set(comp) for comp in components])
@@ -1322,7 +1343,7 @@ class Estimates(object):
 
         for i in range(nbmrg):
             merged_ROI = list(set(components[i]))
-            logging.info(f'Merging components {merged_ROI}')
+            logger.info(f'Merging components {merged_ROI}')
             merged_ROIs.append(merged_ROI)
 
             Acsc = self.A.tocsc()[:, merged_ROI]
@@ -1473,6 +1494,7 @@ class Estimates(object):
             thresh_subset
             plot_duplicates
         '''
+        logger = logging.getLogger("caiman")
         if self.A_thr is None:
             raise Exception('You need to compute thresholded components before calling remove_duplicates: use the threshold_components method')
 
@@ -1481,7 +1503,7 @@ class Estimates(object):
         duplicates_gt, indices_keep_gt, indices_remove_gt, D_gt, overlap_gt = detect_duplicates_and_subsets(
             A_gt_thr_bin,predictions=predictions, r_values=r_values, dist_thr=dist_thr, min_dist=min_dist,
             thresh_subset=thresh_subset)
-        logging.info(f'Number of duplicates: {len(duplicates_gt)}')
+        logger.info(f'Number of duplicates: {len(duplicates_gt)}')
         if len(duplicates_gt) > 0:
             if plot_duplicates:
                 plt.figure()
@@ -1571,6 +1593,7 @@ class Estimates(object):
 
             location: str
         """
+        logger = logging.getLogger("caiman")
 
         if identifier is None:
             identifier = uuid.uuid1().hex
@@ -1605,7 +1628,7 @@ class Estimates(object):
                 io.write(nwbfile)
 
         time.sleep(4)  # ensure the file is fully closed before opening again in append mode
-        logging.info('Saving the results in the NWB file...')
+        logger.info('Saving the results in the NWB file...')
 
         with NWBHDF5IO(filename, 'r+') as io:
             nwbfile = io.read()

@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
 import argparse
-import distutils.dir_util
 import filecmp
 import glob
+import json
 import os
 import platform
 import psutil
@@ -45,7 +45,8 @@ extra_dirs = ['bin', 'demos', 'docs', 'model', 'testdata']
 # standard_movies: These are needed by the demo
 standard_movies = [
     os.path.join('example_movies', 'data_endoscope.tif'),
-    os.path.join('example_movies', 'demoMovie.tif')
+    os.path.join('example_movies', 'demoMovie.tif'),
+    os.path.join('example_movies', 'avg_mask_fixed.png')
 ]
 
 ###############
@@ -53,20 +54,35 @@ standard_movies = [
 
 def do_install_to(targdir: str, inplace: bool = False, force: bool = False) -> None:
     global sourcedir_base
+    cwd = None # Assigning so it exists to avoid UnboundLocalError
+
+    try:
+        import importlib
+        import importlib_metadata
+        # A lot can change upstream with this code; I hope the APIs are stable, but just in case, make this best-effort
+        if json.loads(importlib_metadata.Distribution.from_name('caiman').read_text('direct_url.json'))['dir_info']['editable']:
+            inplace = True
+            cwd = os.getcwd()
+            os.chdir(str(importlib.resources.files('caiman').joinpath('..')))
+            print(f"Used editable fallback, entered {os.getcwd()} directory")
+    except:
+        print("Did not use editable fallback")
+
+    ignore_pycache=shutil.ignore_patterns('__pycache__')
     if os.path.isdir(targdir) and not force:
         raise Exception(targdir + " already exists. You may move it out of the way, remove it, or use --force")
     if not inplace:    # In this case we rely on what setup.py put in the share directory for the module
         if not force:
-            shutil.copytree(sourcedir_base, targdir)
+            shutil.copytree(sourcedir_base, targdir, ignore=ignore_pycache)
         else:
-            distutils.dir_util.copy_tree(sourcedir_base, targdir)
+            shutil.copytree(sourcedir_base, targdir, ignore=ignore_pycache, dirs_exist_ok=True)
         os.makedirs(os.path.join(targdir, 'temp'          ), exist_ok=True)
     else:          # here we recreate the other logical path here. Maintenance concern: Keep these reasonably in sync with what's in setup.py
         for copydir in extra_dirs:
             if not force:
-                shutil.copytree(copydir, os.path.join(targdir, copydir))
+                shutil.copytree(copydir, os.path.join(targdir, copydir), ignore=ignore_pycache)
             else:
-                distutils.dir_util.copy_tree(copydir, os.path.join(targdir, copydir))
+                shutil.copytree(copydir, os.path.join(targdir, copydir), ignore=ignore_pycache, dirs_exist_ok=True)
         os.makedirs(os.path.join(targdir, 'example_movies'), exist_ok=True)
         os.makedirs(os.path.join(targdir, 'temp'          ), exist_ok=True)
         for stdmovie in standard_movies:
@@ -77,6 +93,8 @@ def do_install_to(targdir: str, inplace: bool = False, force: bool = False) -> N
         with open(os.path.join(targdir, 'RELEASE'), 'w') as verfile_fh:
             print(f"Version:{caiman.__version__}", file=verfile_fh)
     print("Installed " + targdir)
+    if cwd is not None:
+        os.chdir(cwd)
 
 
 def do_check_install(targdir: str, inplace: bool = False) -> None:
@@ -108,31 +126,31 @@ def do_check_install(targdir: str, inplace: bool = False) -> None:
         raise Exception("Install is dirty")
 
 
-def do_run_nosetests(targdir: str) -> None:
-    out, err, ret = runcmd(["nosetests", "--verbose", "--traverse-namespace", "caiman"])
+def do_run_pytest(targdir: str) -> None:
+    out, err, ret = runcmd(["pytest", "--verbose", "--pyargs", "caiman"])
     if ret != 0:
-        print(f"Nosetests failed with return code {ret}")
+        print(f"pytest failed with return code {ret}")
         sys.exit(ret)
     else:
-        print("Nosetests success!")
+        print("pytest success!")
 
-def do_run_coverage_nosetests(targdir: str) -> None:
-    # Run nosetests, but invoke coverage so we get statistics on how much our tests actually exercise
+def do_run_coverage_pytest(targdir: str) -> None:
+    # Run pytest, but invoke coverage so we get statistics on how much our tests actually exercise
     # the code. It would probably be a mistake to do CI testing around these figures (as we often add things to
     # the codebase before they're fully fleshed out), but we can at least make the command below easier to invoke
     # with this frontend.
     #
     # This command will not function from the conda package, because there would be no reason to use it in that case.
     # If we ever change our mind on this, it's a simple addition of the coverage package to the feedstock.
-    out, err, ret = runcmd(["nosetests", "--verbose", "--with-coverage", "--cover-package=caiman", "--cover-erase", "--traverse-namespace", "caiman"])
+    out, err, ret = runcmd(["pytest", "--verbose", "--cov=caiman", "caiman"])
     if ret != 0:
-        print("Nosetests failed with return code " + str(ret))
+        print("pytestfailed with return code " + str(ret))
         print("If it failed due to a message like the following, it is a known issue:")
         print("ValueError: cannot resize an array that references or is referenced by another array in this way.")
         print("We believe this to be harmless and caused by coverage having additional rules for code")
         sys.exit(ret)
     else:
-        print("Nosetests success!")
+        print("pytest success!")
 
 
 def do_run_demotests(targdir: str) -> None:
@@ -238,9 +256,9 @@ def main():
     elif cfg.command == 'check':
         do_check_install(cfg.userdir, cfg.inplace)
     elif cfg.command == 'test':
-        do_run_nosetests(cfg.userdir)
+        do_run_pytest(cfg.userdir)
     elif cfg.command == 'covtest':
-        do_run_coverage_nosetests(cfg.userdir)
+        do_run_coverage_pytest(cfg.userdir)
     elif cfg.command == 'demotest':
         if os.name == 'nt':
             do_nt_run_demotests(cfg.userdir)

@@ -3,8 +3,9 @@
 import cv2
 import logging
 import numpy as np
-import pylab as pl
-pl.ion()
+import matplotlib
+import matplotlib.pyplot as plt
+plt.ion()
 
 import caiman.base.timeseries
 
@@ -57,18 +58,20 @@ class trace(caiman.base.timeseries.timeseries):
             ValueError "All traces must be positive"
             ValueError "The window must be shorter than the total length"
         """
+        logger = logging.getLogger("caiman")
+
         if np.min(self) <= 0:
             raise ValueError("All traces must be positive")
 
         T, _ = self.shape
         window = int(window_sec * self.fr)
-        logging.debug(window)
+        logger.debug(window)
         if window >= T:
             raise ValueError("The window must be shorter than the total length")
 
         tracesDFF = []
         for tr in self.T:
-            logging.debug(f"TR Shape is {tr.shape}")
+            logger.debug(f"TR Shape is {tr.shape}")
             traceBL = [np.percentile(tr[i:i + window], minQuantile) for i in range(1, len(tr) - window)]
             missing = np.percentile(tr[-window:], minQuantile)
             missing = np.repeat(missing, window + 1)
@@ -80,7 +83,7 @@ class trace(caiman.base.timeseries.timeseries):
     def resample(self, fx=1, fy=1, fz=1, interpolation=cv2.INTER_AREA):
         raise Exception('Not Implemented. Look at movie resize')
 
-    def plot(self, stacked=True, subtract_minimum=False, cmap=pl.cm.jet, **kwargs):
+    def plot(self, stacked=True, subtract_minimum=False, cmap=matplotlib.cm.jet, **kwargs):
         """Plot the data
 
         author: ben deverett
@@ -91,7 +94,7 @@ class trace(caiman.base.timeseries.timeseries):
             subtract_minimum : bool
                 subtract minimum from each individual trace
             cmap : matplotlib.LinearSegmentedColormap
-                color map for display. Options are found in pl.colormaps(), and are accessed as pl.cm.my_favourite_map
+                color map for display. Options are found in matplotlib.colormaps(), and are accessed as matplotlib.cm.my_favourite_map
             kwargs : dict
                 any arguments accepted by matplotlib.plot
 
@@ -104,7 +107,7 @@ class trace(caiman.base.timeseries.timeseries):
         if len(d.shape) > 1:
             n = d.shape[1]
 
-        ax = pl.gca()
+        ax = plt.gca()
 
         colors = cmap(np.linspace(0, 1, n))
         ax.set_color_cycle(colors)
@@ -122,7 +125,7 @@ class trace(caiman.base.timeseries.timeseries):
         ax2.set_yticklabels([str(i) for i in range(n)], weight='bold')
         [l.set_color(c) for l, c in zip(ax2.get_yticklabels(), colors)]
 
-        pl.gcf().canvas.draw()
+        plt.gcf().canvas.draw()
         return ax
 
     def extract_epochs(self, trigs=None, tb=1, ta=1):

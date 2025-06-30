@@ -75,17 +75,17 @@ def decimate_last_axis(y, sub):
 def downscale(Y, ds, opencv=False):
     """downscaling without zero padding
     faster version of skimage.transform._warps.block_reduce(Y, ds, np.nanmean, np.nan)"""
+    logger = logging.getLogger("caiman")
 
-    from caiman.base.movies import movie
     d = Y.ndim
     if opencv and (d in [2, 3]):
         if d == 2:
             Y = Y[..., None]
             ds = tuple(ds) + (1,)
         else:
-            Y_ds = movie(Y.transpose(2, 0, 1)).resize(fx=1. / ds[0], fy=1. / ds[1], fz=1. / ds[2],
+            Y_ds = caiman.base.movies.movie(Y.transpose(2, 0, 1)).resize(fx=1. / ds[0], fy=1. / ds[1], fz=1. / ds[2],
                                                       interpolation=cv2.INTER_AREA).transpose(1, 2, 0)
-        logging.info('Downscaling using OpenCV')
+        logger.info('Downscaling using OpenCV')
     else:
         if d > 3:
             # raise NotImplementedError
@@ -148,7 +148,8 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
                           min_corr=0.8, min_pnr=10, seed_method='auto', ring_size_factor=1.5,
                           center_psf=False, ssub_B=2, init_iter=2, remove_baseline = True,
                           SC_kernel='heat', SC_sigma=1, SC_thr=0, SC_normalize=True, SC_use_NN=False,
-                          SC_nnn=20, lambda_gnmf=1):
+                          SC_nnn=20, lambda_gnmf=1, snmf_l1_ratio:float=0.0,
+                          greedyroi_nmf_init_method:str='nndsvdar', greedyroi_nmf_max_iter:int=200):
     """
     Initialize components. This function initializes the spatial footprints, temporal components,
     and background which are then further refined by the CNMF iterations. There are four
@@ -167,6 +168,12 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
 
     It is also by default followed by hierarchical alternative least squares (HALS) NMF.
     Optional use of spatio-temporal downsampling to boost speed.
+
+    TODO: Parameters are a mess for this and threading new parameters down to the called code
+    is awful. In the future we should both clean up the parameters object and just pass it in,
+    either whole or in some limited (or nested-dict) form, rather than have this many
+    arguments. This will need to be a complete overhaul because the way params are passed in now
+    make the structure of CNMFParams closely tied to the function signature.
 
     Args:
         Y: np.ndarray
@@ -256,6 +263,15 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
         init_iter: int, optional
             number of iterations for 1-photon imaging initialization
 
+        snmf_l1_ratio: float
+            Used only by sparse NMF, passed to NMF call
+
+        greedyroi_nmf_init_method
+            If greedy_roi is used, this specifies the NMF init method
+
+        greedyroi_nmf_max_iter
+            If greedy_roi is used, this specifies the max_iter to NMF
+
     Returns:
         Ain: np.ndarray
             (d1 * d2 [ * d3]) x K , spatial filter of each neuron.
@@ -272,12 +288,8 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
         fin: np.ndarray
             nb x T matrix, initialization of temporal background
 
-    Raises:
-        Exception "Unsupported method"
-
-        Exception 'You need to define arguments for local NMF'
-
     """
+    logger = logging.getLogger("caiman")
     method = method_init
 
     if gSiz is None:
@@ -288,8 +300,8 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
     gSig = np.asarray(gSig, dtype=float) / ssub
     gSiz = np.round(np.asarray(gSiz) / ssub).astype(int)
 
-    if normalize_init is True:
-        logging.info('Variance Normalization')
+    if normalize_init:
+        logger.info('Variance Normalization')
         if img is None:
             img = np.mean(Y, axis=-1)
             img += np.median(img)
@@ -305,11 +317,11 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
     if ssub != 1 or tsub != 1:
 
         if method == 'corr_pnr':
-            logging.info("Spatial/Temporal downsampling 1-photon")
+            logger.info("Spatial/Temporal downsampling 1-photon")
             # this increments the performance against ground truth and solves border problems
             Y_ds = downscale(Y, tuple([ssub] * len(d) + [tsub]), opencv=False)
         else:
-            logging.info("Spatial/Temporal downsampling 2-photon")
+            logger.info("Spatial/Temporal downsampling 2-photon")
             # this increments the performance against ground truth and solves border problems
             Y_ds = downscale(Y, tuple([ssub] * len(d) + [tsub]), opencv=True)
     else:
@@ -319,14 +331,14 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
     if nb > min(np.prod(ds), Y_ds.shape[-1]):
         nb = -1
 
-    logging.info('Roi Initialization...')
+    logger.info(f'Roi Initialization with method {method}...')
     if method == 'greedy_roi':
         Ain, Cin, _, b_in, f_in = greedyROI(
             Y_ds, nr=K, gSig=gSig, gSiz=gSiz, nIter=nIter, kernel=kernel, nb=nb,
-            rolling_sum=rolling_sum, rolling_length=rolling_length, seed_method=seed_method)
+            rolling_sum=rolling_sum, rolling_length=rolling_length, seed_method=seed_method, nmf_overrides={'init_method': greedyroi_nmf_init_method, 'max_iter': greedyroi_nmf_max_iter})
 
         if use_hals:
-            logging.info('Refining Components using HALS NMF iterations')
+            logger.info('Refining Components using HALS NMF iterations')
             Ain, Cin, b_in, f_in = hals(
                 Y_ds, Ain, Cin, b_in, f_in, maxIter=maxIter)
     elif method == 'corr_pnr':
@@ -338,7 +350,7 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
     elif method == 'sparse_nmf':
         Ain, Cin, _, b_in, f_in = sparseNMF(
             Y_ds, nr=K, nb=nb, max_iter_snmf=max_iter_snmf, alpha=alpha_snmf,
-            sigma_smooth=sigma_smooth_snmf, remove_baseline=remove_baseline, perc_baseline=perc_baseline_snmf)
+            sigma_smooth=sigma_smooth_snmf, remove_baseline=remove_baseline, perc_baseline=perc_baseline_snmf, l1_ratio=snmf_l1_ratio)
 
     elif method == 'compressed_nmf':
         Ain, Cin, _, b_in, f_in = compressedNMF(
@@ -353,14 +365,13 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
             SC_sigma=SC_sigma, SC_use_NN=SC_use_NN, SC_nnn=SC_nnn,
             SC_normalize=SC_normalize, SC_thr=SC_thr)
 
-    elif method == 'pca_ica':
+    elif method == 'pca_ica': # This code may be untested
         Ain, Cin, _, b_in, f_in = ICA_PCA(
             Y_ds, nr=K, sigma_smooth=sigma_smooth_snmf, truncate=2, fun='logcosh', tol=1e-10,
             max_iter=max_iter_snmf, remove_baseline=True, perc_baseline=perc_baseline_snmf, nb=nb)
 
     else:
-        print(method)
-        raise Exception("Unsupported initialization method")
+        raise Exception(f"Unsupported initialization method {method}")
 
     K = np.shape(Ain)[-1]
 
@@ -403,7 +414,7 @@ def initialize_components(Y, K=30, gSig=[5, 5], gSiz=None, ssub=1, tsub=1, nIter
         Cin = np.empty((K, T), dtype=np.float32)
         center = []
 
-    if normalize_init is True:
+    if normalize_init:
         if Ain.size > 0:
             Ain = Ain * np.reshape(img, (np.prod(d), -1), order='F')
         if sparse_b:
@@ -432,6 +443,8 @@ def ICA_PCA(Y_ds, nr, sigma_smooth=(.5, .5, .5), truncate=2, fun='logcosh',
         nb
     """
 
+    # Does this work well enough to leave it in the codebase? Unclear if this
+    # works
     print("not a function to use in the moment ICA PCA \n")
     m = scipy.ndimage.gaussian_filter(np.transpose(
         Y_ds, [2, 0, 1]), sigma=sigma_smooth, mode='nearest', truncate=truncate)
@@ -484,7 +497,7 @@ def ICA_PCA(Y_ds, nr, sigma_smooth=(.5, .5, .5), truncate=2, fun='logcosh',
     return A_in, C_in, center, b_in, f_in
 
 def sparseNMF(Y_ds, nr, max_iter_snmf=200, alpha=0.5, sigma_smooth=(.5, .5, .5),
-              remove_baseline=True, perc_baseline=20, nb=1, truncate=2):
+              remove_baseline=True, perc_baseline=20, nb=1, truncate=2, l1_ratio=0.0):
     """
     Initialization using sparse NMF
 
@@ -510,6 +523,9 @@ def sparseNMF(Y_ds, nr, max_iter_snmf=200, alpha=0.5, sigma_smooth=(.5, .5, .5),
         nb: int
             Number of background components
 
+        l1_ratio: float
+            Parameter to NMF call
+
     Returns:
         A: np.array
             2d array of size (# of pixels) x nr with the spatial components.
@@ -521,15 +537,17 @@ def sparseNMF(Y_ds, nr, max_iter_snmf=200, alpha=0.5, sigma_smooth=(.5, .5, .5),
         center: np.array
             2d array of size nr x 2 [ or 3] with the components centroids
     """
+    logger = logging.getLogger("caiman")
+
     m = scipy.ndimage.gaussian_filter(np.transpose(
         Y_ds, np.roll(np.arange(Y_ds.ndim), 1)), sigma=sigma_smooth,
         mode='nearest', truncate=truncate)
     if remove_baseline:
-        logging.info('Removing baseline')
+        logger.info('Removing baseline')
         bl = np.percentile(m, perc_baseline, axis=0)
         m1 = np.maximum(0, m - bl)
     else:
-        logging.info('Not removing baseline')
+        logger.info('Not removing baseline')
         bl = np.zeros(m.shape[1:])
         m1 = m
 
@@ -537,7 +555,7 @@ def sparseNMF(Y_ds, nr, max_iter_snmf=200, alpha=0.5, sigma_smooth=(.5, .5, .5),
     d = np.prod(dims)
     yr = np.reshape(m1, [T, d], order='F')
 
-    logging.debug(f"Running SparseNMF with alpha_W={alpha}")
+    logger.info(f"Running SparseNMF with alpha_W={alpha} and l1_ratio={l1_ratio}")
     mdl = NMF(n_components=nr, 
               verbose=False, 
               init='nndsvd', 
@@ -545,7 +563,7 @@ def sparseNMF(Y_ds, nr, max_iter_snmf=200, alpha=0.5, sigma_smooth=(.5, .5, .5),
               max_iter=max_iter_snmf, 
               shuffle=False, 
               alpha_W=alpha, 
-              l1_ratio=0.0)
+              l1_ratio=l1_ratio)
     C = mdl.fit_transform(yr).T
     A = mdl.components_.T
     A_in = A
@@ -564,44 +582,32 @@ def sparseNMF(Y_ds, nr, max_iter_snmf=200, alpha=0.5, sigma_smooth=(.5, .5, .5),
 def compressedNMF(Y_ds, nr, r_ov=10, max_iter_snmf=500,
                   sigma_smooth=(.5, .5, .5), remove_baseline=False,
                   perc_baseline=20, nb=1, truncate=2, tol=1e-3):
+    logger = logging.getLogger("caiman")
     m = scipy.ndimage.gaussian_filter(np.transpose(
             Y_ds, np.roll(np.arange(Y_ds.ndim), 1)), sigma=sigma_smooth,
             mode='nearest', truncate=truncate)
     if remove_baseline:
-        logging.info('REMOVING BASELINE')
+        logger.info('REMOVING BASELINE')
         bl = np.percentile(m, perc_baseline, axis=0)
         m = np.maximum(0, m - bl)
     else:
-        logging.info('NOT REMOVING BASELINE')
+        logger.info('NOT REMOVING BASELINE')
         bl = np.zeros(m.shape[1:])
 
     T, dims = m.shape[0], m.shape[1:]
     d = np.prod(dims)
     yr = np.reshape(m, [T, d], order='F')
-#    L = randomized_range_finder(yr, nr + r_ov, 3)
-#    R = randomized_range_finder(yr.T, nr + r_ov, 3)
-#    Yt = L.T.dot(yr).dot(R)
-#    c_in, a_in = compressive_nmf(Yt, L, R.T, nr)
-#    C_in = L.dot(c_in)
-#    A_in = a_in.dot(R.T)
-#    A_in = A_in.T
-#    C_in = C_in.T
     A, C, USV = nnsvd_init(yr, nr, r_ov=r_ov)
     W_r = np.random.randn(d, nr + r_ov)
     W_l = np.random.randn(T, nr + r_ov)
     US = USV[0]*USV[1]
     YYt = US.dot(USV[2].dot(USV[2].T)).dot(US.T)
-#    YYt = yr.dot(yr.T)
 
     B = YYt.dot(YYt.dot(US.dot(USV[2].dot(W_r))))
     PC, _ = np.linalg.qr(B)
 
     B = USV[2].T.dot(US.T.dot(YYt.dot(YYt.dot(W_l))))
     PA, _ = np.linalg.qr(B)
-#    mdl = NMF(n_components=nr, verbose=False, init='nndsvd', tol=1e-10,
-#              max_iter=1)
-#    C = mdl.fit_transform(yr).T
-#    A = mdl.components_.T
 
     yrPA = yr.dot(PA)
     yrPC = PC.T.dot(yr)
@@ -618,7 +624,7 @@ def compressedNMF(Y_ds, nr, r_ov=10, max_iter_snmf=500,
         A /= nA
         C *= nA[:, np.newaxis]
         if (np.linalg.norm(C - C__)/np.linalg.norm(C__) < tol) & (np.linalg.norm(A - A__)/np.linalg.norm(A__) < tol):
-            logging.info(f'Graph NMF converged after {it + 1} iterations')
+            logger.info(f'Graph NMF converged after {it + 1} iterations')
             break
     A_in = A
     C_in = C
@@ -638,15 +644,16 @@ def graphNMF(Y_ds, nr, max_iter_snmf=500, lambda_gnmf=1,
              perc_baseline=20, nb=1, truncate=2, tol=1e-3, SC_kernel='heat',
              SC_normalize=True, SC_thr=0, SC_sigma=1, SC_use_NN=False,
              SC_nnn=20):
+    logger = logging.getLogger("caiman")
     m = scipy.ndimage.gaussian_filter(np.transpose(
     Y_ds, np.roll(np.arange(Y_ds.ndim), 1)), sigma=sigma_smooth,
     mode='nearest', truncate=truncate)
     if remove_baseline:
-        logging.info('REMOVING BASELINE')
+        logger.info('REMOVING BASELINE')
         bl = np.percentile(m, perc_baseline, axis=0)
         m1 = np.maximum(0, m - bl)
     else:
-        logging.info('NOT REMOVING BASELINE')
+        logger.info('NOT REMOVING BASELINE')
         bl = np.zeros(m.shape[1:])
         m1 = m
     T, dims = m1.shape[0], m1.shape[1:]
@@ -657,7 +664,7 @@ def graphNMF(Y_ds, nr, max_iter_snmf=500, lambda_gnmf=1,
     C = mdl.fit_transform(yr).T
     A = mdl.components_.T
     W = caiman.source_extraction.cnmf.utilities.fast_graph_Laplacian_patches(
-            [np.reshape(m, [T, d], order='F').T, [], 'heat', SC_sigma, SC_thr,
+            [np.reshape(m, [T, d], order='F').T, [], SC_kernel, SC_sigma, SC_thr,
              SC_nnn, SC_normalize, SC_use_NN])
     D = scipy.sparse.spdiags(W.sum(0), 0, W.shape[0], W.shape[0])
     for it in range(max_iter_snmf):
@@ -669,7 +676,7 @@ def graphNMF(Y_ds, nr, max_iter_snmf=500, lambda_gnmf=1,
         A /= nA
         C *= nA[:, np.newaxis]
         if (np.linalg.norm(C - C_)/np.linalg.norm(C_) < tol) & (np.linalg.norm(A - A_)/np.linalg.norm(A_) < tol):
-            logging.info(f'Graph NMF converged after {it + 1} iterations')
+            logger.info(f'Graph NMF converged after {it + 1} iterations')
             break
     A_in = A
     C_in = C
@@ -684,7 +691,7 @@ def graphNMF(Y_ds, nr, max_iter_snmf=500, lambda_gnmf=1,
     return A_in, C_in, center, b_in, f_in
 
 def greedyROI(Y, nr=30, gSig=[5, 5], gSiz=[11, 11], nIter=5, kernel=None, nb=1,
-              rolling_sum=False, rolling_length=100, seed_method='auto'):
+              rolling_sum=False, rolling_length:int=100, seed_method:str='auto', nmf_overrides:dict = None):
     """
     Greedy initialization of spatial and temporal components using spatial Gaussian filtering
 
@@ -710,7 +717,7 @@ def greedyROI(Y, nr=30, gSig=[5, 5], gSiz=[11, 11], nIter=5, kernel=None, nb=1,
         nb: int
             Number of background components
 
-        rolling_max: boolean
+        rolling_sum: boolean
             Detect new components based on a rolling sum of pixel activity (default: True)
 
         rolling_length: int
@@ -721,6 +728,17 @@ def greedyROI(Y, nr=30, gSig=[5, 5], gSiz=[11, 11], nIter=5, kernel=None, nb=1,
             'semi' detects nr components automatically and allows to add more manually
             if running as notebook 'semi' and 'manual' require a backend that does not
             inline figures, e.g. %matplotlib tk
+
+        nmf_overrides: dict
+            This provides a mechanism to override arguments to sklearn.decomposition.NMF()
+            Right now, the accepted keys are:
+                'max_iter' - default number of iterations requested. Defaults to 200 to match the default value in the signature on the sklearn side.
+                'init_method' - Default NMF init method. Defaults to 'nndsvdar', the nonnegative double singular value decomposition with
+                    zeroes replaced with small random values.
+                    Some users report better results with 'random', which uses nonnegative random matrices
+                        scaled with sqrt(X.mean() / n_components)
+                    See the docs for sklearn.decomposition.NMF() for other init methods.
+            Please reach out if you want more options supported.
 
     Returns:
         A: np.array
@@ -733,6 +751,10 @@ def greedyROI(Y, nr=30, gSig=[5, 5], gSiz=[11, 11], nIter=5, kernel=None, nb=1,
         center: np.array
             2d array of size nr x 2 [ or 3] with the components centroids
 
+        b_in: (UNDOCUMENTED)
+
+        f_in: (UNDOCUMENTED)
+
     Author:
         Eftychios A. Pnevmatikakis and Andrea Giovannucci based on a matlab implementation by Yuanjun Gao
             Simons Foundation, 2015
@@ -742,7 +764,8 @@ def greedyROI(Y, nr=30, gSig=[5, 5], gSiz=[11, 11], nIter=5, kernel=None, nb=1,
 
 
     """
-    logging.info("Greedy initialization of spatial and temporal components using spatial Gaussian filtering")
+    logger = logging.getLogger("caiman")
+    logger.info(f"Greedy initialization of spatial and temporal components using spatial Gaussian filtering. Params={nmf_overrides}")
     d = np.shape(Y)
     Y[np.isnan(Y)] = 0
     med = np.median(Y, axis=-1)
@@ -758,13 +781,13 @@ def greedyROI(Y, nr=30, gSig=[5, 5], gSiz=[11, 11], nIter=5, kernel=None, nb=1,
 
     rho = imblur(Y, sig=gSig, siz=gSiz, nDimBlur=Y.ndim - 1, kernel=kernel)
     if rolling_sum:
-        logging.info('Using rolling sum for initialization (RollingGreedyROI)')
+        logger.info('Using rolling sum for initialization (RollingGreedyROI)')
         rolling_filter = np.ones(
             (rolling_length), dtype=np.float32) / rolling_length
         rho_s = scipy.signal.lfilter(rolling_filter, 1., rho**2)
         v = np.amax(rho_s, axis=-1)
     else:
-        logging.info('Using total sum for initialization (GreedyROI)')
+        logger.info('Using total sum for initialization (GreedyROI)')
         v = np.sum(rho**2, axis=-1)
 
     if seed_method.lower() != 'manual':
@@ -834,6 +857,7 @@ def greedyROI(Y, nr=30, gSig=[5, 5], gSiz=[11, 11], nIter=5, kernel=None, nb=1,
             if len(center):
                 plt.scatter(*np.transpose(center)[::-1], c='b')
             plt.axis('off')
+            # TODO: Move this graphics code out of the core algorithms; figure out right way to do that
             plt.suptitle(
                 'Click to add component. Click again on it to remove it. Press any key to update figure. Add more components, or press any key again when done.')
             centers = []
@@ -919,8 +943,19 @@ def greedyROI(Y, nr=30, gSig=[5, 5], gSiz=[11, 11], nIter=5, kernel=None, nb=1,
 
     res = np.reshape(Y, (np.prod(d[0:-1]), d[-1]),
                      order='F') + med.flatten(order='F')[:, None]
-#    model = NMF(n_components=nb, init='random', random_state=0)
-    model = NMF(n_components=nb, init='nndsvdar')
+
+    # Defaults
+    nmf_init_method = 'nndsvdar'
+    nmf_max_iter = 200
+    # Apply overrides
+    if nmf_overrides is not None and len(nmf_overrides) > 1:
+        if 'max_iter' in nmf_overrides:
+            nmf_max_iter = int(nmf_overrides['max_iter'])
+        if 'init_method' in nmf_overrides:
+            nmf_init_method = nmf_overrides['init_method']
+
+    model = NMF(n_components=nb, max_iter=nmf_max_iter, init=nmf_init_method)
+
     b_in = model.fit_transform(np.maximum(res, 0)).astype(np.float32)
     f_in = model.components_.astype(np.float32)
 
@@ -1163,12 +1198,13 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
         init_iter: int, optional
             number of iterations for 1-photon imaging initialization
     """
+    logger = logging.getLogger("caiman")
     if min_corr is None or min_pnr is None:
         raise Exception(
             'Either min_corr or min_pnr are None. Both of them must be real numbers.')
 
-    logging.info('One photon initialization (GreedyCorr)')
-    o = options['temporal_params'].copy()
+    logger.info('One photon initialization (GreedyCorr)')
+    o = options['temporal'].copy()
     o['s_min'] = None
     if o['p'] > 1:
         o['p'] = 1
@@ -1188,7 +1224,7 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
 
     if ring_size_factor is not None:
         # background according to ringmodel
-        logging.info('Computing ring model background')
+        logger.info('Computing ring model background')
         W, b0 = compute_W(Y_ds.reshape((-1, total_frames), order='F'),
                           A, C, (d1, d2), ring_size_factor * gSiz, ssub=ssub_B)
 
@@ -1208,14 +1244,14 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
         B = compute_B(b0, W, B)  # "-B"
         B += Y_ds.reshape((-1, total_frames), order='F')  # "Y-B"
 
-        logging.info('Updating spatial components')
+        logger.info('Updating spatial components')
         A, _, C, _ = caiman.source_extraction.cnmf.spatial.update_spatial_components(
             B, C=C, f=np.zeros((0, total_frames), np.float32), A_in=A,
             sn=np.sqrt(downscale((sn**2).reshape(dims, order='F'),
                                  tuple([ssub] * len(dims))).ravel() / tsub) / ssub,
             b_in=np.zeros((d1 * d2, 0), np.float32),
-            dview=None, dims=(d1, d2), **options['spatial_params'])
-        logging.info('Updating temporal components')
+            dview=None, dims=(d1, d2), **options['spatial'])
+        logger.info('Updating temporal components')
         C, A = caiman.source_extraction.cnmf.temporal.update_temporal_components(
             B, spr.csc_matrix(A, dtype=np.float32),
             np.zeros((d1 * d2, 0), np.float32),
@@ -1230,7 +1266,7 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
             if max_number != 0:
                 if i == init_iter-2 and seed_method.lower()[:4] == 'semi':
                     seed_method, min_corr, min_pnr = 'manual', 0, 0
-                logging.info('Searching for more neurons in the residual')
+                logger.info('Searching for more neurons in the residual')
                 A_R, C_R, _, _, center_R = init_neurons_corr_pnr(
                     (B - A.dot(C)).reshape(Y_ds.shape, order='F'),
                     max_number=max_number, gSiz=gSiz, gSig=gSig,
@@ -1242,28 +1278,28 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
                 C = np.concatenate((C, C_R), 0)
 
         # 1st iteration on decimated data
-        logging.info('Merging components')
+        logger.info('Merging components')
         A, C = caiman.source_extraction.cnmf.merging.merge_components(
-            B, A, [], C, None, [], C, [], o, options['spatial_params'],
-            dview=None, thr=options['merging']['merge_thr'], mx=np.Inf, fast_merge=True)[:2]
+            B, A, [], C, None, [], C, [], o, options['spatial'],
+            dview=None, thr=options['merging']['merge_thr'], mx=np.inf, fast_merge=True)[:2]
         A = A.astype(np.float32)
         C = C.astype(np.float32)
-        logging.info('Updating spatial components')
+        logger.info('Updating spatial components')
         A, _, C, _ = caiman.source_extraction.cnmf.spatial.update_spatial_components(
             B, C=C, f=np.zeros((0, total_frames), np.float32), A_in=A,
             sn=np.sqrt(downscale((sn**2).reshape(dims, order='F'),
                                  tuple([ssub] * len(dims))).ravel() / tsub) / ssub,
             b_in=np.zeros((d1 * d2, 0), np.float32),
-            dview=None, dims=(d1, d2), **options['spatial_params'])
+            dview=None, dims=(d1, d2), **options['spatial'])
         A = A.astype(np.float32)
-        logging.info('Updating temporal components')
+        logger.info('Updating temporal components')
         C, A = caiman.source_extraction.cnmf.temporal.update_temporal_components(
             B, spr.csc_matrix(A),
             np.zeros((d1 * d2, 0), np.float32),
             C, np.zeros((0, total_frames), np.float32),
             dview=None, bl=None, c1=None, sn=None, g=None, **o)[:2]
 
-        logging.info('Recomputing background')
+        logger.info('Recomputing background')
         # background according to ringmodel
         W, b0 = compute_W(Y_ds.reshape((-1, total_frames), order='F'),
                           A, C, (d1, d2), ring_size_factor * gSiz, ssub=ssub_B)
@@ -1291,24 +1327,24 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
                                .reshape((np.prod(dims), K), order='F'))
         B += Y.reshape((-1, T), order='F')  # "Y-B"
 
-        logging.info('Merging components')
+        logger.info('Merging components')
         A, C = caiman.source_extraction.cnmf.merging.merge_components(
-            B, A, [], C, None, [], C, [], o, options['spatial_params'],
-            dview=None, thr=options['merging']['merge_thr'], mx=np.Inf, fast_merge=True)[:2]
+            B, A, [], C, None, [], C, [], o, options['spatial'],
+            dview=None, thr=options['merging']['merge_thr'], mx=np.inf, fast_merge=True)[:2]
         A = A.astype(np.float32)
         C = C.astype(np.float32)
-        logging.info('Updating spatial components')
-        options['spatial_params']['se'] = np.ones((1,) * len((d1, d2)), dtype=np.uint8)
+        logger.info('Updating spatial components')
+        options['spatial']['se'] = np.ones((1,) * len((d1, d2)), dtype=np.uint8)
         A, _, C, _ = caiman.source_extraction.cnmf.spatial.update_spatial_components(
             B, C=C, f=np.zeros((0, T), np.float32), A_in=A, sn=sn,
             b_in=np.zeros((np.prod(dims), 0), np.float32),
-            dview=None, dims=dims, **options['spatial_params'])
-        logging.info('Updating temporal components')
+            dview=None, dims=dims, **options['spatial'])
+        logger.info('Updating temporal components')
         C, A, b__, f__, S, bl, c1, neurons_sn, g1, YrA, lam__ = \
             caiman.source_extraction.cnmf.temporal.update_temporal_components(
                 B, spr.csc_matrix(A, dtype=np.float32),
                 np.zeros((np.prod(dims), 0), np.float32), C, np.zeros((0, T), np.float32),
-                dview=None, bl=None, c1=None, sn=None, g=None, **options['temporal_params'])
+                dview=None, bl=None, c1=None, sn=None, g=None, **options['temporal'])
 
         A = A.toarray()
         if nb > 0 or nb == -1:
@@ -1316,16 +1352,15 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
 
     use_NMF = True
     if nb == -1:
-        logging.info('Returning full background')
+        logger.info('Returning full background')
         b_in = spr.eye(len(B), dtype='float32')
         f_in = B
     elif nb > 0:
-        logging.info(f'Estimate low rank background (rank = {nb})')
+        logger.info(f'Estimate low rank background (rank = {nb})')
         print(nb)
         if use_NMF:
             model = NMF(n_components=nb, init='nndsvdar')
             b_in = model.fit_transform(np.maximum(B, 0))
-            # f_in = model.components_.squeeze()
             f_in = np.linalg.lstsq(b_in, B)[0]
         else:
             b_in, s_in, f_in = spr.linalg.svds(B, k=nb)
@@ -1334,12 +1369,12 @@ def greedyROI_corr(Y, Y_ds, max_number=None, gSiz=None, gSig=None, center_psf=Tr
         b_in = np.empty((A.shape[0], 0))
         f_in = np.empty((0, T))
         if nb == 0:
-            logging.info('Returning background as b0 and W')
+            logger.info('Returning background as b0 and W')
             return (A, C, center.T, b_in.astype(np.float32), f_in.astype(np.float32),
                     (S.astype(np.float32), bl, c1, neurons_sn, g1, YrA, lam__,
                      W, b0))
         else:
-            logging.info("Not returning background")
+            logger.info("Not returning background")
     return (A, C, center.T, b_in.astype(np.float32), f_in.astype(np.float32),
             None if ring_size_factor is None else
             (S.astype(np.float32), bl, c1, neurons_sn, g1, YrA, lam__))
@@ -1408,6 +1443,7 @@ def init_neurons_corr_pnr(data, max_number=None, gSiz=15, gSig=None,
         center: np.ndarray
             center locations of all neurons
     """
+    logger = logging.getLogger("caiman")
 
     if swap_dim:
         d1, d2, total_frames = data.shape
@@ -1787,9 +1823,9 @@ def init_neurons_corr_pnr(data, max_number=None, gSiz=15, gSig=None,
                     break
                 else:
                     if num_neurons % 100 == 1:
-                        logging.info(f'{num_neurons - 1} neurons have been initialized')
+                        logger.info(f'{num_neurons - 1} neurons have been initialized')
 
-    logging.info(f'In total, {num_neurons} neurons were initialized.')
+    logger.info(f'In total, {num_neurons} neurons were initialized.')
     # A = np.reshape(Ain[:num_neurons], (-1, d1 * d2)).transpose()
     A = np.reshape(Ain[:num_neurons], (-1, d1 * d2), order='F').transpose()
     C = Cin[:num_neurons]

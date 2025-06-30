@@ -5,8 +5,9 @@ Functions related to optical flow
 """
 
 import cv2
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
-import pylab as pl
 import scipy
 from scipy.sparse import coo_matrix
 from scipy.io import loadmat
@@ -36,16 +37,20 @@ def select_roi(img: np.ndarray, n_rois: int = 1) -> list:
             each element is an the mask considered a ROIs
     """
 
+    # FIXME This function depends on particular builds of OpenCV
+    #       and may be difficult to support moving forward; would be good to
+    #       move this kind of code out of the core and find more portable ways
+    #       to do it
     masks = []
     for _ in range(n_rois):
-        fig = pl.figure()
-        pl.imshow(img, cmap=pl.cm.gray)
+        fig = plt.figure()
+        plt.imshow(img, cmap=matplotlib.cm.gray)
         pts = fig.ginput(0, timeout=0)
         mask = np.zeros(np.shape(img), dtype=np.int32)
         pts = np.asarray(pts, dtype=np.int32)
         cv2.fillConvexPoly(mask, pts, (1, 1, 1), lineType=cv2.LINE_AA)
         masks.append(mask)
-        pl.close()
+        plt.close()
 
     return masks
 
@@ -129,8 +134,8 @@ def extract_magnitude_and_angle_from_OF(spatial_filter_,
             x, y = scipy.signal.medfilt(time_trace, kernel_size=[1, 1]).T
             x = scipy.signal.savgol_filter(x.squeeze(), sav_filter_size, 1)
             y = scipy.signal.savgol_filter(y.squeeze(), sav_filter_size, 1)
-            mag, dirct = to_polar(x - caiman.components_evaluation.mode_robust(x),
-                                  y - caiman.components_evaluation.mode_robust(y))
+            mag, dirct = to_polar(x - caiman.utils.stats.mode_robust(x),
+                                  y - caiman.utils.stats.mode_robust(y))
             dirct = scipy.signal.medfilt(dirct.squeeze(), kernel_size=1).T
 
         # normalize to pixel units
@@ -324,25 +329,12 @@ def extract_components(mov_tot,
 
     if method_factorization == 'nmf':
         nmf = NMF(n_components=n_components, **kwargs)
-
         time_trace = nmf.fit_transform(newm)
         spatial_filter = nmf.components_
         spatial_filter = np.concatenate([np.reshape(sp, (d1, d2))[np.newaxis, :, :] for sp in spatial_filter], axis=0)
-
-    elif method_factorization == 'dict_learn':
-        import spams
-        newm = np.asfortranarray(newm, dtype=np.float32)
-        time_trace = spams.trainDL(newm, K=n_components, mode=0, lambda1=1, posAlpha=True, iter=max_iter_DL)
-
-        spatial_filter = spams.lasso(newm,
-                                     D=time_trace,
-                                     return_reg_path=False,
-                                     lambda1=0.01,
-                                     mode=spams.spams_wrap.PENALTY,
-                                     pos=True)
-
-        spatial_filter = np.concatenate([np.reshape(sp, (d1, d2))[np.newaxis, :, :] for sp in spatial_filter.toarray()],
-                                        axis=0)
+    else:
+        # Caiman used to support a method_factorization called dict_learn, implemented using spams.lasso
+        raise Exception(f"Unknown or unsupported method_factorization: {method_factorization}")
 
     time_trace = [np.reshape(ttr, (c, T)).T for ttr in time_trace.T]
 
@@ -353,12 +345,12 @@ def extract_components(mov_tot,
 
 def plot_components(sp_filt, t_trace) -> None:
     # todo: todocument
-    pl.figure()
+    plt.figure()
     count = 0
     for comp, tr in zip(sp_filt, t_trace):
         count += 1
-        pl.subplot(6, 2, count)
-        pl.imshow(comp)
+        plt.subplot(6, 2, count)
+        plt.imshow(comp)
         count += 1
-        pl.subplot(6, 2, count)
-        pl.plot(tr)
+        plt.subplot(6, 2, count)
+        plt.plot(tr)
