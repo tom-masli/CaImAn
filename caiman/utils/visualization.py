@@ -35,7 +35,7 @@ except:
 try:
     import bokeh
     import bokeh.plotting as bpl
-    from bokeh.models import CustomJS, ColumnDataSource, Range1d, LabelSet
+    from bokeh.models import CustomJS, ColumnDataSource, Range1d, LabelSet, Button, Toggle
 except:
     print("Bokeh could not be loaded. Either it is not installed or you are not running within a notebook")
 
@@ -123,7 +123,8 @@ def view_patches(Yr, A, C, b, f, d1, d2, YrA=None, secs=1):
 
 
 def nb_view_patches(Yr, A, C, b, f, d1, d2, YrA=None, image_neurons=None, thr=0.99,
-                    denoised_color=None, cmap='jet', r_values=None, SNR=None, cnn_preds=None):
+                    denoised_color=None, cmap='jet', r_values=None, SNR=None, cnn_preds=None,
+                    component_accepted = None, filename_components = 'accepted_components.txt'):
     """
     Interactive plotting utility for ipython notebook
 
@@ -152,6 +153,12 @@ def nb_view_patches(Yr, A, C, b, f, d1, d2, YrA=None, image_neurons=None, thr=0.
 
         cmap: string
             name of colormap (e.g. 'viridis') used to plot image_neurons
+            
+        component_accepted: list
+             list of good components to be highlighted in the overall plot with the ability to modify it
+             & save to file
+        filename_components: str
+            name of the file to download when user clicks save button. Must end in .txt
     """
 
     colormap = matplotlib.cm.get_cmap(cmap)
@@ -181,14 +188,18 @@ def nb_view_patches(Yr, A, C, b, f, d1, d2, YrA=None, image_neurons=None, thr=0.
     # split sources up, such that Bokeh does not warn
     # "ColumnDataSource's columns must be of the same length"
     source = ColumnDataSource(data=dict(x=x, y=Y_r[0] / 100, y2=C[0] / 100))
+    
     source_ = ColumnDataSource(data=dict(z=Y_r / 100, z2=C / 100))
     source2 = ColumnDataSource(data=dict(c1=c1, c2=c2))
     source2_ = ColumnDataSource(data=dict(cc1=cc1, cc2=cc2))
-
+    #component_accepted = [] # ColumnDataSource(data=dict( component_accepted = component_accepted, ) )
+    
     code="""
             var data = source.data
             var data_ = source_.data
-            var f = cb_obj.value - 1
+            var my_id_LUT = id_LUT.data['ids']
+            var f = my_id_LUT[cb_obj.value - 1] // default LUT is linear, so slider value starting from 0
+            cb_obj.title = "Cell ID: " + (f+1) + ", Slider position";
             var x = data['x']
             var y = data['y']
             var y2 = data['y2']
@@ -226,31 +237,62 @@ def nb_view_patches(Yr, A, C, b, f, d1, d2, YrA=None, image_neurons=None, thr=0.
             keys=("Evaluation Metrics", "Spatial corr:", "SNR:", "CNN:")))
         if np.sum(cnn_preds) in (0, None):
             metrics_ = ColumnDataSource(data=dict(R=r_values, SNR=SNR))
-        else:
+        elif component_accepted is None:
             metrics_ = ColumnDataSource(data=dict(R=r_values, SNR=SNR, CNN=cnn_preds))
             code += """
                 mets[3] = metrics_.data['CNN'][f].toFixed(3)
             """   
+        else: # my_components is not None
+              ###
+              # here are my modifications:
+            my_colors = [ "green" if i == 1 else "red" for i in component_accepted]
+            metrics = ColumnDataSource(data=dict(y=(5, 4, 3, 2, 1, 0),
+                mets=('', "% 7.3f" % r_values[0], "% 7.3f" % SNR[0],
+                      "N/A" if np.sum(cnn_preds) in (0, None) else "% 7.3f" % cnn_preds[0],
+                      component_accepted[0],  my_colors[0]),
+                keys=("Evaluation Metrics", "Spatial corr:", "SNR:", "CNN:", "Accepted:", "Color:")))
+            metrics_ = ColumnDataSource(data=dict(R=r_values, SNR=SNR, CNN=cnn_preds, 
+                                                  my_status = component_accepted, my_colors = my_colors
+                                                  ))
+            code += """
+                mets[3] = metrics_.data['CNN'][f].toFixed(3)
+                mets[4] = metrics_.data['my_status'][f]
+                mets[5] = metrics_.data['my_colors'][f]
+                renderer.glyph.line_color = mets[5];
+            
+                     
+                
+            """   
+            id_LUT = ColumnDataSource(data = dict(ids = [my_temp_var for my_temp_var in range(len(component_accepted))]))
+            #toggle_button = Button(label="Change accepted/rejected", button_type="success")
+            #component_accepted_source = ColumnDataSource(
+            #    data=dict(component_accepted = component_accepted,   )
+            #   )
+            #save_button = Button(label="Save accepted components", button_type="success")
+            
+         
+       
         labels = LabelSet(x=0, y='y', text='keys', source=metrics) 
         labels2 = LabelSet(x=10, y='y', text='mets', source=metrics, text_align="right") 
-        plot2 = bpl.figure(width=200, height=100, toolbar_location = None)
+        plot2 = bpl.figure(width=200, height=120, toolbar_location = None)
         plot2.axis.visible = False
         plot2.grid.visible = False
         plot2.tools.visible = False
+        plot2.y_range = Range1d(0, 5)  # Adjusted for 5 items
         plot2.line([0,10], [0,4], line_alpha=0)
         plot2.add_layout(labels)
         plot2.add_layout(labels2)     
     else:
         metrics, metrics_ = None, None
-
-    callback = CustomJS(args=dict(source=source, source_=source_, source2=source2,
-                                  source2_=source2_, metrics=metrics, metrics_=metrics_), code=code)
+        
+   
 
     plot = bpl.figure(width=600, height=300)
     plot.line('x', 'y', source=source, line_width=1, line_alpha=0.6)
     if denoised_color is not None:
-        plot.line('x', 'y2', source=source, line_width=1,
-                  line_alpha=0.6, color=denoised_color)
+        
+        line2_renderer = plot.line('x', 'y2', source=source, line_width=1,
+                  line_alpha=0.6, color =  my_colors[0])
 
     xr = Range1d(start=0, end=image_neurons.shape[1])
     yr = Range1d(start=image_neurons.shape[0], end=0)
@@ -262,13 +304,119 @@ def nb_view_patches(Yr, A, C, b, f, d1, d2, YrA=None, image_neurons=None, thr=0.
                 y=0, dw=d2, dh=d1, palette=grayp)
     plot1.patch('c1', 'c2', alpha=0.6, color='purple',
                 line_width=2, source=source2)
-
+    
+    callback = CustomJS(args=dict(source=source, source_=source_, source2=source2,
+                                  source2_=source2_, metrics=metrics, metrics_=metrics_, renderer = line2_renderer, id_LUT = id_LUT ), code=code)
+    
     if Y_r.shape[0] > 1:
         slider = bokeh.models.Slider(start=1, end=Y_r.shape[0], value=1, step=1,
-                                    title="Neuron Number")
+                                    title="Cell ID: 1, Slider position")
         slider.js_on_change('value', callback)
-        bpl.show(bokeh.layouts.layout([[slider], [bokeh.layouts.row(
-            plot1 if r_values is None else bokeh.layouts.column(plot1, plot2), plot)]]))
+        slider_left_button = Button(label="<")   
+        slider_right_button = Button(label=">")   
+        toggle_button = Button(label="Change cell status", button_type="success")
+        save_button = Button(label="Save accepted cells", button_type="success")  
+        sort_toggle = Toggle(label="Sort by SNR", active=False)
+        if r_values is None:
+            
+            bpl.show(bokeh.layouts.layout([[slider], [bokeh.layouts.row(plot1)]]))
+        else:
+            
+            toggle_callback = CustomJS(args=dict(metrics=metrics, metrics_=metrics_, slider = slider, renderer = line2_renderer, id_LUT = id_LUT,), code="""
+               
+                var my_id_LUT = id_LUT.data['ids']
+                var f = my_id_LUT[slider.value - 1]
+                var new_values = metrics_.data['my_status']
+                var new_colors = metrics_.data['my_colors']
+           
+                console.log("n:", f, "old value:", new_values[f]);
+                new_values[f] = 1 - new_values[f];  // Toggle between 0 and 1
+                metrics_.data['my_status'] = new_values;
+                if (new_values[f] == 1) {
+                        new_colors[f] ="green";
+                       } else {
+                           new_colors[f] ="red";
+                           }
+                renderer.glyph.line_color = new_colors[f]
+                metrics_.data['my_colors']=new_colors
+                // Update the metrics display
+                var mets = metrics.data['mets'];
+                mets[4] = new_values[f];
+                mets[5] = new_colors[f];
+                
+                
+                metrics_.change.emit();
+                metrics.change.emit();
+                
+                console.log("new_values :", new_values );
+            """)
+            toggle_button.js_on_click(toggle_callback)
+                
+            save_callback = CustomJS(args=dict(metrics_=metrics_, metrics=metrics, filename = filename_components), code="""
+                var new_values = metrics_.data['my_status'];
+                var out = "Cell index \\t Value \\n";
+                for (var i = 0; i < new_values.length; i++) {
+                out += (i + 1) + "\\t" + new_values[i] + "\\n";
+                }
+                // Save to file (Note: This won't actually save to a file in a standalone HTML/JS environment)
+                console.log("New accepted components:", new_values);
+                var file = new Blob([out], {type: 'text/plain'});
+                var elem = window.document.createElement('a');
+                elem.href = window.URL.createObjectURL(file);
+                elem.download = filename;
+                document.body.appendChild(elem);
+                elem.click();
+                document.body.removeChild(elem);
+            """)
+            save_button.js_on_click(save_callback)
+            
+            slider_change_left_callback =  CustomJS(args=dict(slider=slider), code="""
+                                                    if (slider.value > slider.start) {
+                                                            slider.value = slider.value - 1;
+                                                            }
+                                                    """)
+            slider_left_button.js_on_click(slider_change_left_callback)
+            
+            slider_change_right_callback = CustomJS(args=dict(slider=slider), code="""
+                                                    if (slider.value < slider.end) {
+                                                            slider.value = slider.value + 1;
+                                                            }
+                                                    """)
+            slider_right_button.js_on_click(slider_change_right_callback)
+            
+            sort_callback = CustomJS(args=dict(
+               id_LUT = id_LUT,
+                metrics_=metrics_,
+                slider = slider
+            ), code="""
+                var snr = metrics_.data['SNR'];
+                var flag_active = cb_obj.active;
+                var current_id_LUT = id_LUT.data['ids']
+            
+                var indices = Array.from(Array(snr.length).keys());
+            
+                if (flag_active) {
+                    // Sort indices by SNR descending
+                    indices.sort(function(a, b){ return snr[b] - snr[a]; });
+                    slider.value = indices.indexOf(slider.value-1)+1;
+                } else {
+                    // Restore original order
+                    slider.value = current_id_LUT[slider.value-1]+1;
+                    indices = Array.from(Array(snr.length).keys());  
+                }
+                id_LUT.data['ids'] = indices;
+                id_LUT.change.emit();
+                
+            """)
+            sort_toggle.js_on_click(sort_callback)
+            
+            layout = bokeh.layouts.layout([
+                [slider_left_button, slider, slider_right_button, sort_toggle],
+                [toggle_button, save_button],
+                [bokeh.layouts.row(bokeh.layouts.column(plot1, plot2), plot)]
+            ])
+            
+            bpl.show(layout)
     else:
         bpl.show(bokeh.layouts.row(plot1 if r_values is None else
                                    bokeh.layouts.column(plot1, plot2), plot))
@@ -794,7 +942,7 @@ def nb_imshow(image, cmap='jet'):
 
 def nb_plot_contour(image, A, d1, d2, thr=None, thr_method='max', maxthr=0.2, nrgthr=0.9,
                     face_color=None, line_color='red', alpha=0.4, line_width=2,
-                    coordinates=None, show=True, cmap='viridis', **kwargs):
+                    coordinates=None, show=True, cmap='viridis', figure_width= 600, **kwargs):
     """Interactive Equivalent of plot_contours for ipython notebook
 
     Args:
@@ -830,11 +978,15 @@ def nb_plot_contour(image, A, d1, d2, thr=None, thr_method='max', maxthr=0.2, nr
 
         cmap:     string
                 User specifies the colormap (default None, default colormap)
+            
+        figure_width: int
+                Setting the width of the Bokeh figure. Height is rescaled according to the image dimensions. 
+                
     """
 
     p = nb_imshow(image, cmap=cmap)
-    p.width = 600
-    p.height = 600 * d1 // d2
+    p.width = figure_width
+    p.height = figure_width * d1 // d2
     center = caiman.base.rois.com(A, d1, d2)
     p.circle(center[:, 1], center[:, 0], size=10, color="black",
              fill_color=None, line_width=2, alpha=1)

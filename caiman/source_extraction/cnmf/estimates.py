@@ -227,7 +227,7 @@ class Estimates(object):
         return self
 
     def plot_contours_nb(self, img=None, idx=None, thr_method='max',
-                         thr=0.2, params=None, line_color='white', cmap='viridis'):
+                         thr=0.2, params=None, line_color='white', cmap='viridis', figure_width = 600):
         """view contours of all spatial footprints (notebook environment).
 
         Args:
@@ -244,6 +244,8 @@ class Estimates(object):
                 only effective if self.coordinates is None, i.e. not already computed
             params : params object
                 set of dictionary containing the various parameters
+            figure_width: int
+                    Setting the width of the Bokeh figure. Height is rescaled according to the image dimensions. 
         """
         try:
             if 'csc_matrix' not in str(type(self.A)):
@@ -259,7 +261,7 @@ class Estimates(object):
                 p = caiman.utils.visualization.nb_plot_contour(img, self.A, self.dims[0],
                                 self.dims[1], coordinates=self.coordinates,
                                 thr_method=thr_method, thr=thr, show=False,
-                                line_color=line_color, cmap=cmap)
+                                line_color=line_color, cmap=cmap, figure_width=figure_width)
                 p.title.text = 'Contour plots of found components'
                 if params is not None:
                     p.xaxis.axis_label = '''\
@@ -353,7 +355,7 @@ class Estimates(object):
         return self
 
     def nb_view_components(self, Yr=None, img=None, idx=None,
-                           denoised_color=None, cmap='jet', thr=0.99):
+                           denoised_color=None, cmap='jet', thr=0.99, filename_components = 'accepted_components.txt'):
         """view spatial and temporal components interactively in a notebook
 
         Args:
@@ -375,6 +377,13 @@ class Estimates(object):
 
             cmap: string
                 name of colormap (e.g. 'viridis') used to plot image_neurons
+                
+            my_components: list
+                list of good components to be highlighted in the overall plot with the ability to 
+                to modify it
+                & save to file
+            filename_components: str
+                name of the file to download when user clicks save button. Must end in .txt
         """
         if 'csc_matrix' not in str(type(self.A)):
             self.A = scipy.sparse.csc_matrix(self.A)
@@ -391,12 +400,26 @@ class Estimates(object):
 
         if img is None:
             img = np.reshape(np.array(self.A.mean(axis=1)), self.dims, order='F')
-
+            
+        if self.idx_components is not None:    
+            component_accepted = [1 if i in self.idx_components else 0 for i in range(self.C.shape[0])]
+            component_accepted = np.array(component_accepted)    
+        else:
+            component_accepted = [0 for i in range(self.C.shape[0])]
+            component_accepted = np.array(component_accepted)    
         if idx is None:
-            caiman.utils.visualization.nb_view_patches(
-                Yr, self.A, self.C, self.b, self.f, self.dims[0], self.dims[1],
-                YrA=self.R, image_neurons=img, thr=thr, denoised_color=denoised_color, cmap=cmap,
-                r_values=self.r_values, SNR=self.SNR_comp, cnn_preds=self.cnn_preds)
+            if self.idx_components is not None:
+              
+                caiman.utils.visualization.nb_view_patches(
+                    Yr, self.A, self.C, self.b, self.f, self.dims[0], self.dims[1],
+                    YrA=self.R, image_neurons=img, thr=thr, denoised_color=denoised_color, cmap=cmap,
+                    r_values=self.r_values, SNR=self.SNR_comp, cnn_preds=self.cnn_preds,
+                    component_accepted = component_accepted, filename_components = filename_components)
+            else:
+                caiman.utils.visualization.nb_view_patches(
+                    Yr, self.A, self.C, self.b, self.f, self.dims[0], self.dims[1],
+                    YrA=self.R, image_neurons=img, thr=thr, denoised_color=denoised_color, cmap=cmap,
+                    r_values=self.r_values, SNR=self.SNR_comp, cnn_preds=self.cnn_preds)
         else:
             caiman.utils.visualization.nb_view_patches(
                 Yr, self.A.tocsc()[:,idx], self.C[idx], self.b, self.f,
@@ -404,7 +427,10 @@ class Estimates(object):
                 thr=thr, denoised_color=denoised_color, cmap=cmap,
                 r_values=None if self.r_values is None else self.r_values[idx],
                 SNR=None if self.SNR_comp is None else self.SNR_comp[idx],
-                cnn_preds=None if np.sum(self.cnn_preds) in (0, None) else self.cnn_preds[idx])
+                cnn_preds=None if np.sum(self.cnn_preds) in (0, None) else self.cnn_preds[idx],
+                component_accepted=None if np.sum(component_accepted) in (0, None) else component_accepted[idx],
+                filename_components= filename_components )
+       
         return self
 
     def hv_view_components(self, Yr=None, img=None, idx=None,
