@@ -169,7 +169,7 @@ class Estimates(object):
 
     def plot_contours(self, img=None, idx=None, thr_method='max',
                       thr=0.2, display_numbers=True, params=None,
-                      cmap='viridis'):
+                      cmap='viridis', figure_width = 600):
         """view contours of all spatial footprints.
 
         Args:
@@ -188,6 +188,9 @@ class Estimates(object):
                 flag for displaying the id number of each contour
             params : params object
                 set of dictionary containing the various parameters
+            figure_width: int
+                Setting the width of the matplotlib figure. Height is rescaled according to the image dimensions. 
+           
         """
         if 'csc_matrix' not in str(type(self.A)):
             self.A = scipy.sparse.csc_matrix(self.A)
@@ -195,7 +198,7 @@ class Estimates(object):
             img = np.reshape(np.array(self.A.mean(1)), self.dims, order='F')
         if self.coordinates is None:  # not hasattr(self, 'coordinates'):
             self.coordinates = caiman.utils.visualization.get_contours(self.A, img.shape, thr=thr, thr_method=thr_method)
-        plt.figure()
+        plt.figure(plt.figure(width = figure_width, height = figure_width * len(img)// len(img[0])))
         if params is not None:
             plt.suptitle('min_SNR=%1.2f, rval_thr=%1.2f, use_cnn=%i'
                          %(params.quality['min_SNR'],
