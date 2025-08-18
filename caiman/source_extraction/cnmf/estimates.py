@@ -198,7 +198,7 @@ class Estimates(object):
             img = np.reshape(np.array(self.A.mean(1)), self.dims, order='F')
         if self.coordinates is None:  # not hasattr(self, 'coordinates'):
             self.coordinates = caiman.utils.visualization.get_contours(self.A, img.shape, thr=thr, thr_method=thr_method)
-        plt.figure(width = figure_width, height = figure_width * len(img)// len(img[0]))
+        plt.figure(figsize=(figure_width,  figure_width * len(img)// len(img[0]) ))
         if params is not None:
             plt.suptitle('min_SNR=%1.2f, rval_thr=%1.2f, use_cnn=%i'
                          %(params.quality['min_SNR'],
